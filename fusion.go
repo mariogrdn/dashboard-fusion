@@ -70,7 +70,7 @@ type GridPos struct {
 // content of the panel in ps1, but preserves its position and id.
 //
 // If a panel in ps2 does not match any panel in ps1 it is appended and placed at the end of the dashboard.
-func MergePanels(ps1, ps2 []Panel, top bool) []Panel {
+func MergePanels(ps1, ps2 []Panel) []Panel {
 	var maxY int
 	res := make([]Panel, 0, len(ps1)+len(ps2))
 	for _, p1 := range ps1 {
