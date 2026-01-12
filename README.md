@@ -19,5 +19,5 @@ dashboard-fusion
       --dash string      Location of base dashboard [required]
       --out string       Location of updated dashboard, defaults to stdout
       --panels strings   Location of panel(s) to be merged into base dashboard [required]
-      --top bool         Append new panels to the top of the destination dashboard instead of the default bottom
+      --top bool         Append new groups/panels to the top of the destination dashboard instead of the default bottom
 ```
