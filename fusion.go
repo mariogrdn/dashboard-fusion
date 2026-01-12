@@ -45,6 +45,10 @@ func (p Panel) TitleRaw() json.RawMessage {
 	return p["title"]
 }
 
+func (p Panel) PanelsRaw() json.RawMessage {
+	return p["panels"]
+}
+
 func (p Panel) GridPos() GridPos {
 	if gp, ok := p["gridPos"]; ok {
 		var gridPos GridPos
@@ -267,6 +271,9 @@ func groupByRow(ps []Panel) (map[string][]Panel, map[string]Panel) {
 						groupName = title
 					}
 				}
+				groups[groupName] = append(groups[groupName], retrieveEmbeddedPanels(p)...)
+				p["panels"], _ = json.Marshal([]Panel{})
+				p["collapsed"], _ = json.Marshal(false)
 				rows[groupName] = p
 			} else {
 				groups[groupName] = append(groups[groupName], p)
@@ -275,4 +282,14 @@ func groupByRow(ps []Panel) (map[string][]Panel, map[string]Panel) {
 	}
 
 	return groups, rows
+}
+
+func retrieveEmbeddedPanels(p Panel) []Panel {
+	if panelsRaw := p.PanelsRaw(); panelsRaw != nil {
+		var panels []Panel
+		if err := json.Unmarshal(panelsRaw, &panels); err == nil {
+			return panels
+		}
+	}
+	return nil
 }
