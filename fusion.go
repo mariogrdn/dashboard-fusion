@@ -129,7 +129,7 @@ func MergePanelsByGroup(ps1, ps2 []Panel, top bool) []Panel {
 	mergedGroups := make(map[string][]Panel)
 	for name, g1 := range groupsPs1 {
 		if g2, ok := groupsPs2[name]; ok {
-			mergedGroups[name] = MergePanels(g1, g2, false)
+			mergedGroups[name] = MergePanels(g1, g2)
 		} else {
 			mergedGroups[name] = g1
 		}
