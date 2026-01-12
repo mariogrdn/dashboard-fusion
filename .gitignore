@@ -6,6 +6,7 @@
 *.so
 *.dylib
 .direnv
+*.json
 
 # Development binary
 *.dev
