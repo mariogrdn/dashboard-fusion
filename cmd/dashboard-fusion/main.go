@@ -15,10 +15,12 @@ var args = struct {
 	dash   *string
 	panels *[]string
 	out    *string
+	top    *bool
 }{
 	dash:   pflag.String("dash", "", "Location of base dashboard [required]"),
 	panels: pflag.StringSlice("panels", []string{}, "Location of panel(s) to be merged into base dashboard [required]"),
 	out:    pflag.String("out", "", "Location of updated dashboard, defaults to stdout"),
+	top:    pflag.Bool("top", false, "Append new panels to the top instead of bottom of the destination dashboard"),
 }
 
 func main() {
@@ -46,7 +48,7 @@ func main() {
 			ps2 = dd.Panels()
 		}
 
-		ps = fusion.MergePanels(ps, ps2)
+		ps = fusion.MergePanelsByGroup(ps, ps2, *args.top)
 	}
 
 	d["panels"], err = json.Marshal(ps)
