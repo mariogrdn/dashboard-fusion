@@ -157,11 +157,6 @@ func MergePanelsByGroup(ps1, ps2 []Panel, top bool) []Panel {
 		}
 	}
 
-	// append ungrouped panels ("none") if present
-	if panels, ok := mergedGroups["none"]; ok {
-		tmp1 = append(tmp1, panels...)
-		seen["none"] = true
-	}
 	// append groups that were only in ps2
 	for title, panels := range mergedGroups {
 		if slices.Contains(onlyPs2, title) {
@@ -207,10 +202,12 @@ func MergePanelsByGroup(ps1, ps2 []Panel, top bool) []Panel {
 		}
 	}
 
-	res := make([]Panel, 0, len(tmp1)+len(tmp2))
+	res := make([]Panel, 0, len(mergedGroups["none"])+len(tmp1)+len(tmp2))
 
+	// ungrouped panels will always be appended to the top
 	// if top is true append the new panels and groups to the top
 	// otherwise to the bottom
+	res = append(res, mergedGroups["none"]...)
 	if top {
 		res = append(res, tmp1...)
 		res = append(res, tmp2...)
