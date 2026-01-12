@@ -288,5 +288,5 @@ func retrieveEmbeddedPanels(p Panel) []Panel {
 			return panels
 		}
 	}
-	return nil
+	return []Panel{}
 }
