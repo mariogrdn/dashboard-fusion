@@ -100,12 +100,9 @@ func MergePanels(ps1, ps2 []Panel) []Panel {
 		}
 
 		if !matched {
-			g := GridPos{
-				H: 2,
-				W: 6,
-				X: 0,
-				Y: maxY + 1,
-			}
+			g := p2.GridPos()
+			g.X = 0
+			g.Y = maxY + 1
 			graw, err := json.Marshal(g)
 			if err != nil {
 				panic(err)
