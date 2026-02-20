@@ -1,5 +1,14 @@
 // Copyright 2023 Sauce Labs Inc., all rights reserved.
 
+// Package dashboardfusion provides utilities for merging Grafana dashboard
+// panel definitions. It operates on the JSON structure of Grafana dashboards,
+// allowing panels from multiple sources to be combined into a single dashboard
+// while preserving layout positions, panel identities, and row grouping.
+//
+// Grafana dashboards use a 24-column grid system where each panel has a
+// position (x, y) and dimensions (width, height). This package handles the
+// complexity of reconciling positions when panels from different dashboards
+// are merged together.
 package dashboardfusion
 
 import (
@@ -8,8 +17,14 @@ import (
 	"slices"
 )
 
+// Dashboard represents a Grafana dashboard as a loosely-typed JSON object.
+// Keys correspond to top-level dashboard fields (e.g. "panels", "title", "uid").
+// Using json.RawMessage as values allows the merge logic to manipulate only
+// the fields it cares about while passing everything else through unchanged.
 type Dashboard map[string]json.RawMessage
 
+// Panels extracts and returns the list of panels from the dashboard.
+// Returns nil if the dashboard has no "panels" field.
 func (d Dashboard) Panels() []Panel {
 	if ps, ok := d["panels"]; ok {
 		var panels []Panel
@@ -22,33 +37,49 @@ func (d Dashboard) Panels() []Panel {
 	return nil
 }
 
+// Panel represents a single Grafana dashboard panel as a loosely-typed JSON
+// object. Common fields include "title", "type", "id", "gridPos", and
+// "panels" (for row-type panels that contain collapsed child panels).
 type Panel map[string]json.RawMessage
 
+// Equals reports whether two panels represent the same logical panel.
+// Two panels match if they share the same title and type, regardless of
+// other fields like id, gridPos, or content.
 func (p Panel) Equals(p2 Panel) bool {
 	return bytes.Equal(p["title"], p2["title"]) &&
 		bytes.Equal(p["type"], p2["type"])
 }
 
+// IDRaw returns the raw JSON value of the panel's "id" field.
 func (p Panel) IDRaw() json.RawMessage {
 	return p["id"]
 }
 
+// GridPosRaw returns the raw JSON value of the panel's "gridPos" field.
 func (p Panel) GridPosRaw() json.RawMessage {
 	return p["gridPos"]
 }
 
+// TypeRaw returns the raw JSON value of the panel's "type" field.
+// Panel types include "graph", "table", "stat", "row", etc.
 func (p Panel) TypeRaw() json.RawMessage {
 	return p["type"]
 }
 
+// TitleRaw returns the raw JSON value of the panel's "title" field.
 func (p Panel) TitleRaw() json.RawMessage {
 	return p["title"]
 }
 
+// PanelsRaw returns the raw JSON value of the panel's "panels" field.
+// This is only relevant for "row"-type panels, which can contain
+// collapsed child panels nested inside them.
 func (p Panel) PanelsRaw() json.RawMessage {
 	return p["panels"]
 }
 
+// GridPos parses and returns the panel's grid position as a typed struct.
+// Returns a zero-value GridPos if the field is absent.
 func (p Panel) GridPos() GridPos {
 	if gp, ok := p["gridPos"]; ok {
 		var gridPos GridPos
@@ -61,6 +92,9 @@ func (p Panel) GridPos() GridPos {
 	return GridPos{}
 }
 
+// GridPos describes a panel's position and size on Grafana's 24-column grid.
+//   - X, Y: top-left corner of the panel (X: column 0-23, Y: row from top)
+//   - W, H: width (in columns, max 24) and height (in grid units)
 type GridPos struct {
 	H int `json:"h"`
 	W int `json:"w"`
@@ -125,16 +159,28 @@ func MergePanels(ps1, ps2 []Panel) []Panel {
 	return res
 }
 
-// MergePanelsByGroup merges two sets of panels
-// first by group and then, if possible, by panels name and type.
-// The new panels are appended to either top or bottom of the
-// res dashboard based on the value of the 'top' flag.
-
+// MergePanelsByGroup merges two sets of panels using row-based grouping.
+//
+// Panels are first grouped by their enclosing row header (panels of type "row").
+// Groups with the same row title are merged using MergePanels (matching by
+// title+type within each group). Groups that exist only in ps2 are treated as
+// new and appended.
+//
+// The 'top' flag controls where new groups (those only in ps2) are placed:
+//   - top=true:  new groups appear above existing groups
+//   - top=false: new groups appear below existing groups
+//
+// Ungrouped panels (those not under any row header) always appear at the top.
+// After assembly, all panels are re-positioned vertically so groups stack
+// without overlaps, while preserving the 2D layout within each group.
 func MergePanelsByGroup(ps1, ps2 []Panel, top bool) []Panel {
+	// Split both panel sets into groups keyed by row title.
+	// "none" is used as the key for panels that appear before any row header.
 	groupsPs1, rowsPs1 := groupByRow(ps1)
 	groupsPs2, rowsPs2 := groupByRow(ps2)
 
-	// merge child panels per group
+	// Phase 1: Merge child panels for groups that exist in both sets.
+	// Groups only in one set are carried over as-is.
 	mergedGroups := make(map[string][]Panel)
 	for name, g1 := range groupsPs1 {
 		if g2, ok := groupsPs2[name]; ok {
@@ -149,20 +195,24 @@ func MergePanelsByGroup(ps1, ps2 []Panel, top bool) []Panel {
 		}
 	}
 
+	// Phase 2: Assemble the final panel list by interleaving row headers
+	// with their merged child panels.
+	//
+	// tmp1 holds groups that are new (only in ps2).
+	// tmp2 holds groups that existed in ps1 (preserving ps1's row order).
 	tmp1 := make([]Panel, 0)
 	tmp2 := make([]Panel, 0)
 	seen := make(map[string]bool)
 
-	// check what rows belong only to ps2
+	// Identify which rows exist only in ps2 (i.e. entirely new groups).
 	var onlyPs2 []string
-
 	for title := range rowsPs2 {
 		if _, ok := rowsPs1[title]; !ok {
 			onlyPs2 = append(onlyPs2, title)
 		}
 	}
 
-	// append groups that were only in ps2
+	// Collect new groups (ps2-only) into tmp1 with their row headers.
 	for title, panels := range mergedGroups {
 		if slices.Contains(onlyPs2, title) {
 			header := rowsPs2[title]
@@ -172,7 +222,9 @@ func MergePanelsByGroup(ps1, ps2 []Panel, top bool) []Panel {
 		}
 	}
 
-	// preserve order of row headers from ps1
+	// Walk ps1's panels in order to preserve the original row ordering.
+	// For each row header encountered, emit the header followed by the
+	// merged group's child panels into tmp2.
 	for _, p := range ps1 {
 		if t := p.TypeRaw(); t != nil {
 			var panelType string
@@ -188,7 +240,7 @@ func MergePanelsByGroup(ps1, ps2 []Panel, top bool) []Panel {
 					title = "none"
 				}
 
-				// append header (prefer ps1 header)
+				// Use the ps1 row header if available; fall back to ps2's.
 				if header, ok := rowsPs1[title]; ok {
 					tmp2 = append(tmp2, header)
 				} else if header, ok := rowsPs2[title]; ok {
@@ -207,11 +259,11 @@ func MergePanelsByGroup(ps1, ps2 []Panel, top bool) []Panel {
 		}
 	}
 
+	// Phase 3: Combine everything into the final result.
+	// Ungrouped panels ("none" group) always go first.
+	// The 'top' flag determines whether new groups (tmp1) appear
+	// before or after existing groups (tmp2).
 	res := make([]Panel, 0, len(mergedGroups["none"])+len(tmp1)+len(tmp2))
-
-	// ungrouped panels will always be appended to the top
-	// if top is true append the new panels and groups to the top
-	// otherwise to the bottom
 	res = append(res, mergedGroups["none"]...)
 	if top {
 		res = append(res, tmp1...)
@@ -221,10 +273,13 @@ func MergePanelsByGroup(ps1, ps2 []Panel, top bool) []Panel {
 		res = append(res, tmp1...)
 	}
 
-	// Stack groups vertically, preserving within-group 2D layout.
+	// Phase 4: Re-position all panels vertically so groups stack without
+	// overlaps. Each group's internal 2D layout (relative X/Y positions)
+	// is preserved, but the group as a whole is shifted to start
+	// immediately after the previous group ends.
 	yOffset := 0
 
-	// Handle ungrouped panels first (before any row header).
+	// First, position ungrouped panels (everything before the first row header).
 	ungroupedEnd := len(res)
 	for j, p := range res {
 		if t := p.TypeRaw(); t != nil {
@@ -237,10 +292,11 @@ func MergePanelsByGroup(ps1, ps2 []Panel, top bool) []Panel {
 	}
 	yOffset = shiftGroupToY(res[:ungroupedEnd], yOffset)
 
-	// Process remaining panels group by group, separated by row headers.
+	// Then, process each row-delimited group: place the row header as a
+	// full-width bar, then shift the group's child panels below it.
 	i := ungroupedEnd
 	for i < len(res) {
-		// Place the row header.
+		// Position the row header: full width (24 columns), at current yOffset.
 		pos := res[i].GridPos()
 		pos.X = 0
 		pos.Y = yOffset
@@ -253,7 +309,8 @@ func MergePanelsByGroup(ps1, ps2 []Panel, top bool) []Panel {
 		yOffset += pos.H
 		i++
 
-		// Find the end of this group's child panels (up to next row header or end).
+		// Find the extent of this group's child panels (up to the next
+		// row header or the end of the slice).
 		groupEnd := i
 		for j := i; j < len(res); j++ {
 			if t := res[j].TypeRaw(); t != nil {
@@ -397,6 +454,23 @@ func extendPanelsToFillGaps(panels []Panel) {
 	}
 }
 
+// groupByRow splits a flat list of panels into groups based on row headers.
+//
+// In Grafana, panels of type "row" act as collapsible section headers. When a
+// row is collapsed, its child panels are stored inside the row's "panels"
+// field. When expanded, the child panels appear as siblings after the row
+// panel in the flat list.
+//
+// This function handles both cases:
+//   - Collapsed rows: child panels are extracted from the row's embedded "panels" field.
+//   - Expanded rows: subsequent non-row panels are collected until the next row header.
+//
+// Returns two maps keyed by row title:
+//   - groups: maps each row title to its child panels (flattened).
+//   - rows:   maps each row title to its row header panel (with "panels"
+//     cleared and "collapsed" set to false for consistent output).
+//
+// Panels appearing before any row header are grouped under the key "none".
 func groupByRow(ps []Panel) (map[string][]Panel, map[string]Panel) {
 	groups := make(map[string][]Panel)
 	rows := make(map[string]Panel)
@@ -410,17 +484,21 @@ func groupByRow(ps []Panel) (map[string][]Panel, map[string]Panel) {
 			}
 
 			if panelType == "row" {
+				// Start a new group named after the row's title.
 				if tr := p.TitleRaw(); tr != nil {
 					var title string
 					if err := json.Unmarshal(tr, &title); err == nil {
 						groupName = title
 					}
 				}
+				// Extract any child panels embedded inside a collapsed row.
 				groups[groupName] = append(groups[groupName], retrieveEmbeddedPanels(p)...)
+				// Normalize the row header: clear embedded panels and mark as expanded.
 				p["panels"], _ = json.Marshal([]Panel{})
 				p["collapsed"], _ = json.Marshal(false)
 				rows[groupName] = p
 			} else {
+				// Non-row panel: belongs to the current group.
 				groups[groupName] = append(groups[groupName], p)
 			}
 		}
@@ -429,6 +507,9 @@ func groupByRow(ps []Panel) (map[string][]Panel, map[string]Panel) {
 	return groups, rows
 }
 
+// retrieveEmbeddedPanels extracts child panels from a collapsed row panel.
+// Grafana stores child panels inside the row's "panels" field when the row is
+// collapsed. Returns an empty slice if the field is absent or unparseable.
 func retrieveEmbeddedPanels(p Panel) []Panel {
 	if panelsRaw := p.PanelsRaw(); panelsRaw != nil {
 		var panels []Panel
