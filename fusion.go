@@ -213,37 +213,88 @@ func MergePanelsByGroup(ps1, ps2 []Panel, top bool) []Panel {
 		res = append(res, tmp1...)
 	}
 
-	// make the grid positions consistent
-	const maxWidth = 24
-	currentY := 0
-	currentRowWidth := 0
-	currentRowMaxBottom := 0 // Track tallest panel in row for next Y
+	// Stack groups vertically, preserving within-group 2D layout.
+	yOffset := 0
 
-	for i := range res {
-		panel := res[i]
-		pos := panel.GridPos()
-		if currentRowWidth+pos.W > maxWidth {
-			// New row
-			currentY += currentRowMaxBottom
-			currentRowWidth = 0
-			currentRowMaxBottom = 0
+	// Handle ungrouped panels first (before any row header).
+	ungroupedEnd := len(res)
+	for j, p := range res {
+		if t := p.TypeRaw(); t != nil {
+			var panelType string
+			if err := json.Unmarshal(t, &panelType); err == nil && panelType == "row" {
+				ungroupedEnd = j
+				break
+			}
 		}
-		// Place at next X in row
-		pos.X = currentRowWidth
-		pos.Y = currentY
+	}
+	yOffset = shiftGroupToY(res[:ungroupedEnd], yOffset)
+
+	// Process remaining panels group by group, separated by row headers.
+	i := ungroupedEnd
+	for i < len(res) {
+		// Place the row header.
+		pos := res[i].GridPos()
+		pos.X = 0
+		pos.Y = yOffset
+		pos.W = 24
 		posRaw, err := json.Marshal(pos)
 		if err != nil {
 			panic(err)
 		}
-		panel["gridPos"] = posRaw
-		res[i] = panel
-		// Update row tracking
-		currentRowWidth += pos.W
-		if pos.H > currentRowMaxBottom {
-			currentRowMaxBottom = pos.H
+		res[i]["gridPos"] = posRaw
+		yOffset += pos.H
+		i++
+
+		// Find the end of this group's child panels (up to next row header or end).
+		groupEnd := i
+		for j := i; j < len(res); j++ {
+			if t := res[j].TypeRaw(); t != nil {
+				var panelType string
+				if err := json.Unmarshal(t, &panelType); err == nil && panelType == "row" {
+					break
+				}
+			}
+			groupEnd = j + 1
 		}
+		yOffset = shiftGroupToY(res[i:groupEnd], yOffset)
+		i = groupEnd
 	}
 	return res
+}
+
+// shiftGroupToY sorts panels by (Y, X), preserves their relative 2D layout,
+// and shifts all Y positions so the group starts at targetY.
+// Returns the Y value immediately after the last panel in the group.
+func shiftGroupToY(panels []Panel, targetY int) int {
+	if len(panels) == 0 {
+		return targetY
+	}
+	slices.SortFunc(panels, func(a, b Panel) int {
+		pa, pb := a.GridPos(), b.GridPos()
+		if pa.Y != pb.Y {
+			return pa.Y - pb.Y
+		}
+		return pa.X - pb.X
+	})
+	minY := panels[0].GridPos().Y
+	maxYH := minY
+	for _, p := range panels {
+		pos := p.GridPos()
+		if yh := pos.Y + pos.H; yh > maxYH {
+			maxYH = yh
+		}
+	}
+	for i, p := range panels {
+		pos := p.GridPos()
+		pos.Y = pos.Y - minY + targetY
+		posRaw, err := json.Marshal(pos)
+		if err != nil {
+			panic(err)
+		}
+		p["gridPos"] = posRaw
+		panels[i] = p
+	}
+	return targetY + (maxYH - minY)
 }
 
 func groupByRow(ps []Panel) (map[string][]Panel, map[string]Panel) {
