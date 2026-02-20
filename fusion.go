@@ -100,17 +100,25 @@ func MergePanels(ps1, ps2 []Panel) []Panel {
 		}
 
 		if !matched {
-			g := p2.GridPos()
-			g.X = 0
-			g.Y = maxY + 1
-			graw, err := json.Marshal(g)
-			if err != nil {
-				panic(err)
+			if _, hasGridPos := p2["gridPos"]; !hasGridPos {
+				// No position info: place at the end of the current layout.
+				g := p2.GridPos()
+				g.X = 0
+				g.Y = maxY
+				graw, err := json.Marshal(g)
+				if err != nil {
+					panic(err)
+				}
+				p2["gridPos"] = graw
+				maxY += g.H
+			} else {
+				// Keep the original gridPos; update maxY so subsequent
+				// positionless panels are placed below this one.
+				if gp := p2.GridPos(); gp.Y+gp.H > maxY {
+					maxY = gp.Y + gp.H
+				}
 			}
-			p2["gridPos"] = graw
-
 			res = append(res, p2)
-			maxY += g.H
 		}
 	}
 
@@ -262,8 +270,9 @@ func MergePanelsByGroup(ps1, ps2 []Panel, top bool) []Panel {
 	return res
 }
 
-// shiftGroupToY sorts panels by (Y, X), preserves their relative 2D layout,
-// and shifts all Y positions so the group starts at targetY.
+// shiftGroupToY sorts panels by (Y, X), shifts the group to start at targetY,
+// resolves cross-column overlaps using a per-column floor map, and then
+// extends shorter panels to fill vertical gaps left beside taller neighbours.
 // Returns the Y value immediately after the last panel in the group.
 func shiftGroupToY(panels []Panel, targetY int) int {
 	if len(panels) == 0 {
@@ -277,16 +286,108 @@ func shiftGroupToY(panels []Panel, targetY int) int {
 		return pa.X - pb.X
 	})
 	minY := panels[0].GridPos().Y
-	maxYH := minY
-	for _, p := range panels {
-		pos := p.GridPos()
-		if yh := pos.Y + pos.H; yh > maxYH {
-			maxYH = yh
-		}
+
+	// floor[x] = next available Y at column x.
+	floor := make([]int, 24)
+	for i := range floor {
+		floor[i] = targetY
 	}
+
+	maxYH := targetY
 	for i, p := range panels {
 		pos := p.GridPos()
-		pos.Y = pos.Y - minY + targetY
+		idealY := targetY + (pos.Y - minY)
+
+		end := pos.X + pos.W
+		if end > 24 {
+			end = 24
+		}
+
+		// Find the highest floor across the panel's column span.
+		floorY := targetY
+		for x := pos.X; x < end; x++ {
+			if floor[x] > floorY {
+				floorY = floor[x]
+			}
+		}
+
+		// Place at ideal position, but push down if the floor requires it.
+		newY := idealY
+		if floorY > newY {
+			newY = floorY
+		}
+
+		pos.Y = newY
+		posRaw, err := json.Marshal(pos)
+		if err != nil {
+			panic(err)
+		}
+		p["gridPos"] = posRaw
+		panels[i] = p
+
+		// Raise the floor for all columns this panel occupies.
+		newBottom := newY + pos.H
+		for x := pos.X; x < end; x++ {
+			if newBottom > floor[x] {
+				floor[x] = newBottom
+			}
+		}
+		if newBottom > maxYH {
+			maxYH = newBottom
+		}
+	}
+
+	extendPanelsToFillGaps(panels)
+	return maxYH
+}
+
+// extendPanelsToFillGaps extends panel heights to fill vertical gaps that arise
+// when a taller panel sits beside a shorter one in the same row: without this,
+// a wider panel placed below is pushed down to clear the taller neighbour,
+// leaving empty space beside the shorter one.
+// For each column, consecutive panel pairs are inspected; if a gap exists the
+// upper panel is extended downward to reach the lower panel's top edge.
+func extendPanelsToFillGaps(panels []Panel) {
+	type entry struct{ top, bottom, idx int }
+
+	cols := make([][]entry, 24)
+	for i, p := range panels {
+		pos := p.GridPos()
+		end := pos.X + pos.W
+		if end > 24 {
+			end = 24
+		}
+		for x := pos.X; x < end; x++ {
+			cols[x] = append(cols[x], entry{pos.Y, pos.Y + pos.H, i})
+		}
+	}
+	for x := range cols {
+		slices.SortFunc(cols[x], func(a, b entry) int { return a.top - b.top })
+	}
+
+	newH := make([]int, len(panels))
+	for i, p := range panels {
+		newH[i] = p.GridPos().H
+	}
+	for x := range cols {
+		col := cols[x]
+		for k := 0; k+1 < len(col); k++ {
+			curr, next := col[k], col[k+1]
+			if curr.bottom < next.top {
+				needed := next.top - panels[curr.idx].GridPos().Y
+				if needed > newH[curr.idx] {
+					newH[curr.idx] = needed
+				}
+			}
+		}
+	}
+
+	for i, p := range panels {
+		pos := p.GridPos()
+		if newH[i] == pos.H {
+			continue
+		}
+		pos.H = newH[i]
 		posRaw, err := json.Marshal(pos)
 		if err != nil {
 			panic(err)
@@ -294,7 +395,6 @@ func shiftGroupToY(panels []Panel, targetY int) int {
 		p["gridPos"] = posRaw
 		panels[i] = p
 	}
-	return targetY + (maxYH - minY)
 }
 
 func groupByRow(ps []Panel) (map[string][]Panel, map[string]Panel) {
